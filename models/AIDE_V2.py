@@ -8,7 +8,9 @@ from torchvision import transforms
 import random
 import math
 from .srm_filter_kernel import all_normalized_hpf_list
-from data.dctv2 import DCT_base_Rec_Module_v2
+from data.crops import texture_crop
+from PIL import Image
+import os
 
 class Bottleneck(nn.Module):
     expansion = 4
@@ -192,14 +194,13 @@ class AIDE_V2(nn.Module):
         # 高频特征提取器
         self.hpf = HPF()
         
-        # DCT评分模块
-        self.dct = DCT_base_Rec_Module_v2(window_size=patch_size, stride=patch_size, output=256)
-        
-        # 图像重组模块
-        self.patch_reorganizer = PatchReorganizer(grid_size)
-        
-        # 序列长度
+        # 图像处理相关参数
+        self.patch_size = patch_size
+        self.grid_size = grid_size
         self.sequence_length = sequence_length
+        
+        # 图像转换模块
+        self.transform = transforms.ToTensor()
         
         # ResNet分支
         self.model_min = ResNet(Bottleneck, [3, 4, 6, 3])
@@ -242,32 +243,97 @@ class AIDE_V2(nn.Module):
         # 冻结ConvNeXt参数
         for param in self.openclip_convnext_xxl.parameters():
             param.requires_grad = False
+            
+    def pil_to_tensor(self, pil_images):
+        """将PIL图像列表转换为张量
+        
+        Args:
+            pil_images: PIL图像列表
+            
+        Returns:
+            tensor: [B, C, H, W]形状的张量
+        """
+        tensors = [self.transform(img) for img in pil_images]
+        return torch.stack(tensors)
+    
+    def get_texture_images(self, x):
+        """使用texture_crop获取简单和复杂的图像
+        
+        Args:
+            x: 输入张量 [B, C, H, W]
+            
+        Returns:
+            simple_image: 简单图像张量 [B, C, H, W]
+            complex_image: 复杂图像张量 [B, C, H, W]
+        """
+        B, C, H, W = x.shape
+        batch_simple_images = []
+        batch_complex_images = []
+        
+        for i in range(B):
+            # 将张量转换为PIL图像
+            img = transforms.ToPILImage()(x[i])
+            
+            # 使用texture_crop获取复杂图像（选择熵值高的区域）
+            complex_crops = texture_crop(
+                img, 
+                stride=self.patch_size, 
+                window_size=self.patch_size, 
+                metric='ghe',  # 使用全局熵作为度量
+                position='top',  # 选择顶部（熵值高的区域）
+                n=self.grid_size * self.grid_size
+            )
+            
+            # 使用texture_crop获取简单图像（选择熵值低的区域）
+            simple_crops = texture_crop(
+                img, 
+                stride=self.patch_size, 
+                window_size=self.patch_size, 
+                metric='ghe',  # 使用全局熵作为度量
+                position='bottom',  # 选择底部（熵值低的区域）
+                n=self.grid_size * self.grid_size
+            )
+            
+            # 将裁剪的图像拼接为一个大图像
+            complex_img = Image.new('RGB', (self.patch_size * self.grid_size, self.patch_size * self.grid_size))
+            simple_img = Image.new('RGB', (self.patch_size * self.grid_size, self.patch_size * self.grid_size))
+            
+            for idx, crop in enumerate(complex_crops):
+                row = idx // self.grid_size
+                col = idx % self.grid_size
+                complex_img.paste(crop, (col * self.patch_size, row * self.patch_size))
+                
+            for idx, crop in enumerate(simple_crops):
+                row = idx // self.grid_size
+                col = idx % self.grid_size
+                simple_img.paste(crop, (col * self.patch_size, row * self.patch_size))
+            
+            # 转换为张量
+            complex_tensor = self.transform(complex_img)
+            simple_tensor = self.transform(simple_img)
+            
+            batch_complex_images.append(complex_tensor)
+            batch_simple_images.append(simple_tensor)
+        
+        # 将列表合并为批次张量
+        complex_image = torch.stack(batch_complex_images)
+        simple_image = torch.stack(batch_simple_images)
+        
+        return simple_image, complex_image
 
     def forward(self, x):
         """
         输入: [B, C, H, W]
         输出: 分类结果 [B, 2]
         """
-        B, C, H, W = x.shape
-        num_h = H // self.dct.window_size
-        num_w = W // self.dct.window_size
+        # 1. 使用texture_crop获取简单和复杂图像
+        simple_image, complex_image = self.get_texture_images(x)
         
-        # 1. 使用改进的DCT评分方法获取简单和复杂序列
-        simple_sequence, complex_sequence = self.dct(x)
-        
-        # 2. 选择指定数量的patches
-        simple_sequence = simple_sequence[:self.sequence_length]
-        complex_sequence = complex_sequence[:self.sequence_length]
-        
-        # 3. 重组图像
-        simple_image = self.patch_reorganizer(simple_sequence.unsqueeze(0))
-        complex_image = self.patch_reorganizer(complex_sequence.unsqueeze(0))
-        
-        # 4. 高频特征提取
+        # 2. 高频特征提取
         simple_image = self.hpf(simple_image)
         complex_image = self.hpf(complex_image)
 
-        # 5. ConvNeXt特征提取
+        # 3. ConvNeXt特征提取
         with torch.no_grad():
             # 图像归一化
             clip_mean = torch.Tensor([0.48145466, 0.4578275, 0.40821073])
@@ -285,11 +351,11 @@ class AIDE_V2(nn.Module):
             local_convnext_image_feats = self.avgpool(local_convnext_image_feats).view(x.size(0), -1)
             x_0 = self.convnext_proj(local_convnext_image_feats)
 
-        # 6. ResNet特征提取
+        # 4. ResNet特征提取
         x_min = self.model_min(simple_image)
         x_max = self.model_max(complex_image)
 
-        # 7. 特征融合
+        # 5. 特征融合
         x_1 = (x_min + x_max) / 2
         x = torch.cat([x_0, x_1], dim=1)
         x = self.fc(x)
