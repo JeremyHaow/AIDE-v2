@@ -11,8 +11,6 @@ import numpy as np
 from tqdm import tqdm
 import random
 import cv2
-
-from models.AIDE_V2 import create_model, save_checkpoint, load_checkpoint
 from data.dataset import TrainDataset, TestDataset
 
 def parse_args():
@@ -95,6 +93,31 @@ def get_data_transforms(args):
             train_transforms.append(transforms.RandomErasing(p=args.random_erasing))
     
     return transforms.Compose(train_transforms), transforms.Compose(test_transforms)
+
+def create_model(resnet_path, convnext_path, patch_size=32, grid_size=4, sequence_length=16):
+    """创建AIDE_V2模型实例"""
+    model = AIDE_V2(resnet_path, convnext_path, patch_size, grid_size, sequence_length)
+    return model
+
+def save_checkpoint(state, checkpoint_dir, is_best=True):
+    """保存检查点"""
+    if not os.path.exists(checkpoint_dir):
+        os.makedirs(checkpoint_dir)
+    
+    if is_best:
+        filename = os.path.join(checkpoint_dir, 'best_model.pth')
+    else:
+        filename = os.path.join(checkpoint_dir, 'latest_model.pth')
+    
+    torch.save(state, filename)
+
+def load_checkpoint(model, optimizer, scheduler, checkpoint_path):
+    """加载检查点"""
+    checkpoint = torch.load(checkpoint_path)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+    return checkpoint['epoch'], checkpoint.get('best_acc', 0.0) 
 
 def train(args, model, train_loader, test_loader, criterion, optimizer, scheduler, writer):
     """训练函数"""
