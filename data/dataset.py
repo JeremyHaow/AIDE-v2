@@ -59,12 +59,12 @@ class TestDataset(Dataset):
         self.labels = []
         
         # 收集测试集图像路径和标签
-        test_dir = os.path.join(root_dir, 'test')
+        # test_dir = os.path.join(root_dir, 'test')
         for label, class_name in enumerate(['0_real', '1_fake']):
-            class_dir = os.path.join(test_dir, class_name)
+            class_dir = os.path.join(root_dir, class_name)
             if os.path.exists(class_dir):
                 for img_name in os.listdir(class_dir):
-                    if img_name.endswith(('.jpg', '.jpeg', '.png')):
+                    if img_name.endswith(('.jpg', '.jpeg', '.png','.JPG', '.JPEG', '.PNG')):
                         self.image_paths.append(os.path.join(class_dir, img_name))
                         self.labels.append(label)
         

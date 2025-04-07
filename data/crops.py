@@ -177,6 +177,9 @@ def get_texture_images(x, patch_size=32, grid_size=4):
         complex_image: 复杂图像张量 [B, C, patch_size*grid_size, patch_size*grid_size]
             由熵值最高的区域拼接而成的正方形图像
     """
+    # 记录输入设备以确保返回相同设备的张量
+    device = x.device
+    
     B, C, H, W = x.shape
     batch_simple_images = []
     batch_complex_images = []
@@ -184,7 +187,7 @@ def get_texture_images(x, patch_size=32, grid_size=4):
     
     for i in range(B):
         # 将张量转换为PIL图像
-        img = transforms.ToPILImage()(x[i])
+        img = transforms.ToPILImage()(x[i].cpu())
         
         # 使用texture_crop获取复杂图像（选择熵值高的区域）
         complex_crops = texture_crop(
@@ -234,4 +237,5 @@ def get_texture_images(x, patch_size=32, grid_size=4):
     complex_image = torch.stack(batch_complex_images)
     simple_image = torch.stack(batch_simple_images)
     
-    return simple_image, complex_image
+    # 确保返回的张量与输入张量在同一设备上
+    return simple_image.to(device), complex_image.to(device)

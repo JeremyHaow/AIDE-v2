@@ -12,6 +12,7 @@ from tqdm import tqdm
 import random
 import cv2
 from data.dataset import TrainDataset, TestDataset
+from models.AIDE_V2 import AIDE_V2
 
 def parse_args():
     parser = argparse.ArgumentParser(description='AIDE_V2模型训练、评估和推理')
@@ -19,26 +20,26 @@ def parse_args():
     # 基本参数
     parser.add_argument('--mode', type=str, default='train', choices=['train', 'eval', 'inference'],
                       help='运行模式：训练、评估或推理')
-    parser.add_argument('--data_root', type=str, default='../datasets', help='数据集根目录')
+    parser.add_argument('--data_root', type=str, default='./datasets/AttGAN', help='数据集根目录')
     parser.add_argument('--device', type=str, default='cuda', help='训练设备')
     parser.add_argument('--seed', type=int, default=42, help='随机种子')
     
     # 模型参数
     parser.add_argument('--patch_size', type=int, default=32, help='patch大小')
-    parser.add_argument('--grid_size', type=int, default=4, help='重组图像网格大小')
+    parser.add_argument('--grid_size', type=int, default=3, help='重组图像网格大小')
     parser.add_argument('--sequence_length', type=int, default=16, help='简单和复杂序列长度')
-    parser.add_argument('--resnet_path', type=str, default='../pretrained/resnet50.pth', help='ResNet预训练模型路径')
-    parser.add_argument('--convnext_path', type=str, default='../pretrained/convnext_base.pth', help='ConvNeXt预训练模型路径')
+    parser.add_argument('--resnet_path', type=str, default='./pretrained/resnet50_imagenet.pth', help='ResNet预训练模型路径')
+    parser.add_argument('--convnext_path', type=str, default='./pretrained/open_clip_pytorch_model.bin', help='ConvNeXt预训练模型路径')
     
     # 训练参数
-    parser.add_argument('--batch_size', type=int, default=32, help='批次大小')
-    parser.add_argument('--num_epochs', type=int, default=100, help='训练轮数')
+    parser.add_argument('--batch_size', type=int, default=16, help='批次大小')
+    parser.add_argument('--num_epochs', type=int, default=10, help='训练轮数')
     parser.add_argument('--learning_rate', type=float, default=0.001, help='学习率')
     parser.add_argument('--weight_decay', type=float, default=0.0001, help='权重衰减')
     parser.add_argument('--scheduler', type=str, default='cosine', choices=['cosine', 'step', 'linear'],
                       help='学习率调度器类型')
     parser.add_argument('--warmup_epochs', type=int, default=5, help='预热轮数')
-    parser.add_argument('--checkpoint_dir', type=str, default='../checkpoints', help='模型检查点保存目录')
+    parser.add_argument('--checkpoint_dir', type=str, default='./checkpoints', help='模型检查点保存目录')
     parser.add_argument('--resume', type=str, default=None, help='恢复训练的检查点路径')
     
     # 数据增强参数
@@ -49,7 +50,7 @@ def parse_args():
     parser.add_argument('--random_erasing', type=float, default=0.2, help='随机擦除概率')
     
     # 评估参数
-    parser.add_argument('--eval_batch_size', type=int, default=64, help='评估批次大小')
+    parser.add_argument('--eval_batch_size', type=int, default=32, help='评估批次大小')
     parser.add_argument('--eval_checkpoint', type=str, default=None, help='评估使用的检查点路径')
     
     # 推理参数
@@ -57,7 +58,7 @@ def parse_args():
     parser.add_argument('--inference_checkpoint', type=str, default=None, help='推理使用的检查点路径')
     
     # Tensorboard参数
-    parser.add_argument('--log_dir', type=str, default='../logs', help='Tensorboard日志目录')
+    parser.add_argument('--log_dir', type=str, default='./logs', help='Tensorboard日志目录')
     
     return parser.parse_args()
 
@@ -187,8 +188,18 @@ def evaluate(args, model, test_loader, criterion):
     test_correct = 0
     test_total = 0
     
+
+    # 如果测试集为空，直接返回0
+    if len(test_loader) == 0:
+        print("警告: 测试集为空，无法评估模型性能")
+        return 0.0, 0.0
+
+    # 添加进度条
+    pbar = tqdm(test_loader, desc='评估中')
+
     with torch.no_grad():
-        for inputs, labels in test_loader:
+        # for inputs, labels in test_loader:
+        for inputs, labels in pbar:
             inputs = inputs.to(args.device)
             labels = labels.to(args.device)
             
@@ -199,7 +210,10 @@ def evaluate(args, model, test_loader, criterion):
             _, predicted = outputs.max(1)
             test_total += labels.size(0)
             test_correct += predicted.eq(labels).sum().item()
-    
+
+            # 更新进度条
+            pbar.set_postfix({'loss': f'{test_loss/(pbar.n+1):.4f}',
+                             'acc': f'{100.*test_correct/test_total:.2f}%'})
     test_loss = test_loss / len(test_loader)
     test_acc = 100. * test_correct / test_total
     

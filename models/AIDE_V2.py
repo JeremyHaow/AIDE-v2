@@ -221,7 +221,7 @@ class AIDE_V2(nn.Module):
                     print(f"Skipping layer {k} because of size mismatch")
         
         # 特征融合MLP
-        self.fc = Mlp(2048 + 256, 1024, 2)
+        self.fc = Mlp(258, 1024, 2)
 
         # 加载ConvNeXt模型
         print("build model with convnext_xxl")
