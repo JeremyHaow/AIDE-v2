@@ -6,7 +6,8 @@ from skimage import feature, filters
 from skimage.filters.rank import entropy
 from skimage.morphology import disk
 import torch
-from torchvision.transforms import CenterCrop
+import torchvision.transforms as transforms
+from torchvision.transforms import CenterCrop, ToTensor
 
 ############################################################### TEXTURE CROP ###############################################################
 
@@ -156,3 +157,81 @@ def threshold_texture_crop(image, stride=224, window_size=224, threshold=5, drop
         texture_images = [CenterCrop(image)]
 
     return texture_images
+
+############################################################## GET TEXTURE IMAGES ##############################################################
+
+def get_texture_images(x, patch_size=32, grid_size=4):
+    """使用texture_crop函数获取简单和复杂的图像，确保没有重叠
+    
+    该方法从输入图像中提取复杂和简单的纹理区域，并将它们分别拼接成正方形图像。
+    复杂图像由熵值最高的区域组成，简单图像由熵值最低的区域组成。
+    
+    Args:
+        x: 输入张量 [B, C, H, W]
+        patch_size: 图像块大小
+        grid_size: 网格大小
+        
+    Returns:
+        simple_image: 简单图像张量 [B, C, patch_size*grid_size, patch_size*grid_size]
+            由熵值最低的区域拼接而成的正方形图像
+        complex_image: 复杂图像张量 [B, C, patch_size*grid_size, patch_size*grid_size]
+            由熵值最高的区域拼接而成的正方形图像
+    """
+    B, C, H, W = x.shape
+    batch_simple_images = []
+    batch_complex_images = []
+    transform = ToTensor()
+    
+    for i in range(B):
+        # 将张量转换为PIL图像
+        img = transforms.ToPILImage()(x[i])
+        
+        # 使用texture_crop获取复杂图像（选择熵值高的区域）
+        complex_crops = texture_crop(
+            img, 
+            stride=patch_size, 
+            window_size=patch_size, 
+            metric='ghe',  # 使用全局熵作为度量
+            position='top',  # 选择顶部（熵值高的区域）
+            n=grid_size * grid_size
+        )
+        
+        # 使用texture_crop获取简单图像（选择熵值低的区域）
+        simple_crops = texture_crop(
+            img, 
+            stride=patch_size, 
+            window_size=patch_size, 
+            metric='ghe',  # 使用全局熵作为度量
+            position='bottom',  # 选择底部（熵值低的区域）
+            n=grid_size * grid_size
+        )
+        
+        # 将裁剪的图像拼接为正方形图像
+        # 创建一个patch_size*grid_size × patch_size*grid_size的正方形图像
+        complex_img = Image.new('RGB', (patch_size * grid_size, patch_size * grid_size))
+        simple_img = Image.new('RGB', (patch_size * grid_size, patch_size * grid_size))
+        
+        # 将复杂图像块按网格排列，形成正方形图像
+        for idx, crop in enumerate(complex_crops):
+            row = idx // grid_size
+            col = idx % grid_size
+            complex_img.paste(crop, (col * patch_size, row * patch_size))
+            
+        # 将简单图像块按网格排列，形成正方形图像
+        for idx, crop in enumerate(simple_crops):
+            row = idx // grid_size
+            col = idx % grid_size
+            simple_img.paste(crop, (col * patch_size, row * patch_size))
+        
+        # 转换为张量
+        complex_tensor = transform(complex_img)
+        simple_tensor = transform(simple_img)
+        
+        batch_complex_images.append(complex_tensor)
+        batch_simple_images.append(simple_tensor)
+    
+    # 将列表合并为批次张量
+    complex_image = torch.stack(batch_complex_images)
+    simple_image = torch.stack(batch_simple_images)
+    
+    return simple_image, complex_image

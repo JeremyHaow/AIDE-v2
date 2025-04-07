@@ -3,12 +3,13 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 from scipy.fftpack import dct
+from scipy import stats
 import open_clip
 from torchvision import transforms
 import random
 import math
 from .srm_filter_kernel import all_normalized_hpf_list
-from data.crops import texture_crop
+from data.crops import texture_crop, get_texture_images
 from PIL import Image
 import os
 
@@ -244,90 +245,13 @@ class AIDE_V2(nn.Module):
         for param in self.openclip_convnext_xxl.parameters():
             param.requires_grad = False
             
-    def pil_to_tensor(self, pil_images):
-        """将PIL图像列表转换为张量
-        
-        Args:
-            pil_images: PIL图像列表
-            
-        Returns:
-            tensor: [B, C, H, W]形状的张量
-        """
-        tensors = [self.transform(img) for img in pil_images]
-        return torch.stack(tensors)
-    
-    def get_texture_images(self, x):
-        """使用texture_crop获取简单和复杂的图像
-        
-        Args:
-            x: 输入张量 [B, C, H, W]
-            
-        Returns:
-            simple_image: 简单图像张量 [B, C, H, W]
-            complex_image: 复杂图像张量 [B, C, H, W]
-        """
-        B, C, H, W = x.shape
-        batch_simple_images = []
-        batch_complex_images = []
-        
-        for i in range(B):
-            # 将张量转换为PIL图像
-            img = transforms.ToPILImage()(x[i])
-            
-            # 使用texture_crop获取复杂图像（选择熵值高的区域）
-            complex_crops = texture_crop(
-                img, 
-                stride=self.patch_size, 
-                window_size=self.patch_size, 
-                metric='ghe',  # 使用全局熵作为度量
-                position='top',  # 选择顶部（熵值高的区域）
-                n=self.grid_size * self.grid_size
-            )
-            
-            # 使用texture_crop获取简单图像（选择熵值低的区域）
-            simple_crops = texture_crop(
-                img, 
-                stride=self.patch_size, 
-                window_size=self.patch_size, 
-                metric='ghe',  # 使用全局熵作为度量
-                position='bottom',  # 选择底部（熵值低的区域）
-                n=self.grid_size * self.grid_size
-            )
-            
-            # 将裁剪的图像拼接为一个大图像
-            complex_img = Image.new('RGB', (self.patch_size * self.grid_size, self.patch_size * self.grid_size))
-            simple_img = Image.new('RGB', (self.patch_size * self.grid_size, self.patch_size * self.grid_size))
-            
-            for idx, crop in enumerate(complex_crops):
-                row = idx // self.grid_size
-                col = idx % self.grid_size
-                complex_img.paste(crop, (col * self.patch_size, row * self.patch_size))
-                
-            for idx, crop in enumerate(simple_crops):
-                row = idx // self.grid_size
-                col = idx % self.grid_size
-                simple_img.paste(crop, (col * self.patch_size, row * self.patch_size))
-            
-            # 转换为张量
-            complex_tensor = self.transform(complex_img)
-            simple_tensor = self.transform(simple_img)
-            
-            batch_complex_images.append(complex_tensor)
-            batch_simple_images.append(simple_tensor)
-        
-        # 将列表合并为批次张量
-        complex_image = torch.stack(batch_complex_images)
-        simple_image = torch.stack(batch_simple_images)
-        
-        return simple_image, complex_image
-
     def forward(self, x):
         """
         输入: [B, C, H, W]
         输出: 分类结果 [B, 2]
         """
         # 1. 使用texture_crop获取简单和复杂图像
-        simple_image, complex_image = self.get_texture_images(x)
+        simple_image, complex_image = get_texture_images(x, self.patch_size, self.grid_size)
         
         # 2. 高频特征提取
         simple_image = self.hpf(simple_image)
